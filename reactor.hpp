@@ -229,9 +229,10 @@ public:
 
 	class Epoll : public NonCopyable {
 	public:
-		Epoll(const int init_event_list_size = 16)
+		Epoll(const std::function<void(const char*, int, int)>& error_callback, const int init_event_list_size = 16)
 			: m_epoll_fd_ptr(new int(::epoll_create1(EPOLL_CLOEXEC)), [](int* epoll_fd_ptr) {close(*epoll_fd_ptr);delete epoll_fd_ptr; })
-			, m_events(init_event_list_size) {
+			, m_events(init_event_list_size)
+			, m_error_callback(error_callback) {
 		}
 
 		std::optional<std::vector<Channel*>> poll(int timeout_ms) {
@@ -247,6 +248,10 @@ public:
 					m_events.resize(m_events.size() * 2);
 				return active_channels;
 			}
+			else {
+				if (m_error_callback)
+					m_error_callback(__FILE__, __LINE__, errno);
+			}
 			return {};
 		}
 
@@ -256,7 +261,10 @@ public:
 			event.data.ptr = channel;
 			int fd = channel->fd();
 			event.events = channel->events();
-			::epoll_ctl(*m_epoll_fd_ptr, operation, fd, &event);
+			if (::epoll_ctl(*m_epoll_fd_ptr, operation, fd, &event) < 0) {
+				if (m_error_callback)
+					m_error_callback(__FILE__, __LINE__, errno);
+			}
 		}
 
 		void updateChannel(Channel* channel) {
@@ -278,6 +286,7 @@ public:
 	private:
 		std::unique_ptr<int, std::function<void(int*)>> m_epoll_fd_ptr;
 		std::vector<struct epoll_event> m_events;
+		std::function<void(const char*, int, int)> m_error_callback;
 	};
 
 	class TimerFd : public NonCopyable {
@@ -558,7 +567,7 @@ public:
 	};
 
 	Reactor(const std::function<void(const char*, int, int)>& error_callback = nullptr)
-		: m_epoller_ptr(std::make_unique<Epoll>())
+		: m_epoller_ptr(std::make_unique<Epoll>(error_callback))
 		, m_wakeup_fd_ptr(new int[2](), [](int* wakeup_fd_ptr) {close(wakeup_fd_ptr[0]); close(wakeup_fd_ptr[1]); delete[] wakeup_fd_ptr; })
 		, m_error_callback(error_callback) {
 		if (::pipe(m_wakeup_fd_ptr.get()) == -1)
