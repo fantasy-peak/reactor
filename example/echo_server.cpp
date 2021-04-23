@@ -35,12 +35,12 @@ int main() {
 		spdlog::info("call listen failure!");
 		exit(1);
 	}
-	while (1) {
+	reactor.callOnRead(servfd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>&) mutable {
 		socklen_t length = sizeof(cliaddr);
-		auto clifd = accept(servfd, (struct sockaddr*)&cliaddr, &length);
+		auto clifd = accept(fd, (struct sockaddr*)&cliaddr, &length);
 		if (clifd < 0) {
 			spdlog::info("error comes when call accept!");
-			break;
+			return fantasy::Reactor::CallStatus::Remove;
 		}
 		reactor.callOnRead(clifd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>& channel_ptr) mutable {
 			spdlog::info("call callOnRead");
@@ -64,7 +64,8 @@ int main() {
 			spdlog::info("callOnWrite");
 			char buffer[BUFFER_SIZE] = {};
 			memcpy(buffer, recv_buffer.c_str(), recv_buffer.size());
-			auto n = write(clifd, buffer, strlen(buffer));
+			spdlog::info("buffer: {}", buffer);
+			auto n = write(fd, buffer, strlen(buffer));
 			if (n < 0) {
 				perror("write()");
 				exit(1);
@@ -73,7 +74,8 @@ int main() {
 				spt->disableWriting();
 			return fantasy::Reactor::CallStatus::Ok;
 		});
-	}
+		return fantasy::Reactor::CallStatus::Ok;
+	});
 	while (true)
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	return 0;

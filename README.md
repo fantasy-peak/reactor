@@ -58,13 +58,19 @@ reactor.remove(id);
 fantasy::Reactor reactor;
 reactor.run();
 ...
-while (1) {
+if (listen(servfd, LENGTH_OF_LISTEN_QUEUE) < 0) {
+    spdlog::info("call listen failure!");
+    exit(1);
+}
+reactor.callOnRead(servfd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>&) mutable {
     socklen_t length = sizeof(cliaddr);
-    auto clifd = accept(servfd, (struct sockaddr*)&cliaddr, &length);
+    auto clifd = accept(fd, (struct sockaddr*)&cliaddr, &length);
     if (clifd < 0) {
-        break;
+        spdlog::info("error comes when call accept!");
+        return fantasy::Reactor::CallStatus::Remove;
     }
     reactor.callOnRead(clifd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>& channel_ptr) mutable {
+        spdlog::info("call callOnRead");
         char buffer[BUFFER_SIZE] = {};
         auto n = read(fd, buffer, BUFFER_SIZE);
         if (n < 0) {
@@ -72,18 +78,21 @@ while (1) {
             return fantasy::Reactor::CallStatus::Remove;
         };
         if (n == 0) {
-            // Remove file descriptor from epoll
+            spdlog::info("client close");
             return fantasy::Reactor::CallStatus::Remove;
         }
+        spdlog::info("read: [{}], read buffer len: {}", buffer, n);
         recv_buffer = std::string{buffer};
         if (auto spt = channel_ptr.lock())
             spt->enableWriting();
         return fantasy::Reactor::CallStatus::Ok;
     });
     reactor.callOnWrite(clifd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>& channel_ptr) {
+        spdlog::info("callOnWrite");
         char buffer[BUFFER_SIZE] = {};
         memcpy(buffer, recv_buffer.c_str(), recv_buffer.size());
-        auto n = write(clifd, buffer, strlen(buffer));
+        spdlog::info("buffer: {}", buffer);
+        auto n = write(fd, buffer, strlen(buffer));
         if (n < 0) {
             perror("write()");
             exit(1);
@@ -92,9 +101,8 @@ while (1) {
             spt->disableWriting();
         return fantasy::Reactor::CallStatus::Ok;
     });
-}
-while (true)
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    return fantasy::Reactor::CallStatus::Ok;
+});
 ```
 
 ## Documentation

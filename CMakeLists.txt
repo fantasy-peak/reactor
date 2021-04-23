@@ -8,7 +8,7 @@ add_compile_options(
     -Wno-unused-parameter
     "$<$<CONFIG:DEBUG>:-Og>" "$<$<CONFIG:DEBUG>:-g3>"
     "$<$<CONFIG:RELEASE>:-O3>" "$<$<CONFIG:RELEASE>:-g3>"
-    -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free
+    -Wall -Werror -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free
     -pthread
 )
 
