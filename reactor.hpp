@@ -57,9 +57,9 @@ class Shutdown {};
 
 class Reactor : public NonCopyable {
 public:
-	enum class CallStatus {
-		Ok,
-		Remove,
+	enum class CallStatus : int8_t {
+		Ok = 0,
+		Remove = 1,
 	};
 
 	using EventCallback = std::function<void()>;
@@ -674,6 +674,7 @@ public:
 			std::weak_ptr<Channel> weak_channel_ptr = channel_ptr;
 			channel_ptr->setReadCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
+				printf("call_status: %d\n", (int)call_status);
 				if (call_status == fantasy::Reactor::CallStatus::Remove)
 					remove(call_id);
 			});
