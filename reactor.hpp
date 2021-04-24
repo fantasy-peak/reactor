@@ -240,9 +240,9 @@ public:
 			if (num_events > 0) {
 				std::vector<Channel*> active_channels;
 				for (int i = 0; i < num_events; ++i) {
-					Channel* channel = static_cast<Channel*>(m_events[i].data.ptr);
-					channel->setRevents(m_events[i].events);
-					active_channels.emplace_back(channel);
+					auto channel_ptr = static_cast<Channel*>(m_events[i].data.ptr);
+					channel_ptr->setRevents(m_events[i].events);
+					active_channels.emplace_back(channel_ptr);
 				}
 				if (static_cast<size_t>(num_events) == m_events.size())
 					m_events.resize(m_events.size() * 2);
@@ -456,7 +456,7 @@ public:
 			return m_timer_callback();
 		}
 
-		void restart(const std::chrono::system_clock::time_point& now = std::chrono::system_clock::now()) {
+		void reset(const std::chrono::system_clock::time_point& now = std::chrono::system_clock::now()) {
 			if (m_time_opt) {
 				m_time_point = getTimePoint(m_time_opt.value());
 				m_time_point += m_interval;
@@ -541,14 +541,14 @@ public:
 					repeat_call.emplace_back(std::move(callback));
 			}
 			for (auto& call_ptr : repeat_call) {
-				call_ptr->restart();
+				call_ptr->reset();
 				m_timed_callbacks.emplace(call_ptr->timePoint(), std::move(call_ptr));
 			}
 			if (!m_timed_callbacks.empty())
 				m_timerfd_ptr->resetTimerfd(m_timed_callbacks.begin()->first);
 		}
 
-		void remove(const TimerId& timer_id) {
+		void cancel(const TimerId& timer_id) {
 			m_reactor.callNow([=] {
 				auto i = std::find_if(m_timed_callbacks.begin(), m_timed_callbacks.end(), [&](auto& callback) {
 					return callback.second->id() == timer_id;
@@ -674,9 +674,8 @@ public:
 			std::weak_ptr<Channel> weak_channel_ptr = channel_ptr;
 			channel_ptr->setReadCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
-				printf("call_status: %d\n", (int)call_status);
 				if (call_status == fantasy::Reactor::CallStatus::Remove)
-					remove(call_id);
+					cancel(call_id);
 			});
 			if (is_enable_reading)
 				channel_ptr->enableReading();
@@ -713,7 +712,7 @@ public:
 			channel_ptr->setWriteCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
 				if (call_status == fantasy::Reactor::CallStatus::Remove)
-					remove(call_id);
+					cancel(call_id);
 			});
 			if (is_enable_writing)
 				channel_ptr->enableWriting();
@@ -732,7 +731,7 @@ public:
 			channel_ptr->setCloseCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
 				if (call_status == fantasy::Reactor::CallStatus::Remove)
-					remove(call_id);
+					cancel(call_id);
 			});
 			return call_id;
 		});
@@ -749,7 +748,7 @@ public:
 			channel_ptr->setErrorCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
 				if (call_status == fantasy::Reactor::CallStatus::Remove)
-					remove(call_id);
+					cancel(call_id);
 			});
 			return call_id;
 		});
@@ -760,7 +759,7 @@ public:
 	}
 
 	template <typename T>
-	void remove(const T& id) {
+	void cancel(const T& id) {
 		if constexpr (std::is_same_v<T, CallId>) {
 			callNow([this, id] {
 				if (auto it = m_work_channels.find(id); it != m_work_channels.end()) {
@@ -771,7 +770,7 @@ public:
 			});
 		}
 		else
-			m_timer_queue_ptr->remove(id);
+			m_timer_queue_ptr->cancel(id);
 	}
 
 	void run() {

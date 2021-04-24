@@ -49,8 +49,8 @@ auto id = reactor.callEveryDay(fantasy::Time{5, 30, 0, 0}, [] {
     return fantasy::Reactor::CallStatus::Ok;
 });
 
-// Remove scheduled tasks
-reactor.remove(id);
+// cancel scheduled tasks
+reactor.cancel(id);
 
 ```
 #### add file descriptor to reactor for read && write
