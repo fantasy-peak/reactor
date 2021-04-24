@@ -64,21 +64,21 @@ if (listen(servfd, LENGTH_OF_LISTEN_QUEUE) < 0) {
 }
 reactor.callOnRead(servfd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>&) mutable {
     socklen_t length = sizeof(cliaddr);
-    auto clifd = accept(fd, (struct sockaddr*)&cliaddr, &length);
+    int clifd = ::accept4(fd, (struct sockaddr*)&cliaddr, &length, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (clifd < 0) {
-        spdlog::info("error comes when call accept!");
-        return fantasy::Reactor::CallStatus::Remove;
+        spdlog::error("error comes when call accept!");
+        return fantasy::Reactor::CallStatus::Ok;
     }
     reactor.callOnRead(clifd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>& channel_ptr) mutable {
         spdlog::info("call callOnRead");
         char buffer[BUFFER_SIZE] = {};
         auto n = read(fd, buffer, BUFFER_SIZE);
         if (n < 0) {
-            perror("write()");
+            perror("read()");
             return fantasy::Reactor::CallStatus::Remove;
         };
         if (n == 0) {
-            spdlog::info("client close");
+            spdlog::error("client close");
             return fantasy::Reactor::CallStatus::Remove;
         }
         spdlog::info("read: [{}], read buffer len: {}", buffer, n);
