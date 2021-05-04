@@ -83,11 +83,6 @@ public:
 			, m_fd_state(FdStatus::New) {
 		}
 
-		int setRevents(int revt) {
-			m_revents = revt;
-			return revt;
-		};
-
 		void setEventCallback(EventCallback&& cb) {
 			m_event_callback = std::move(cb);
 		}
@@ -173,12 +168,24 @@ public:
 			return m_fd_state;
 		}
 
-		void setFdStatus(const FdStatus& fd_state) {
-			m_fd_state = fd_state;
-		}
-
 		bool isNoneEvent() const {
 			return m_events == 0;
+		}
+
+		auto& reactor() {
+			return m_reactor;
+		}
+
+		friend class Reactor;
+
+	private:
+		int setRevents(int revt) {
+			m_revents = revt;
+			return revt;
+		};
+
+		void setFdStatus(const FdStatus& fd_state) {
+			m_fd_state = fd_state;
 		}
 
 		void handleEvent() {
@@ -204,11 +211,6 @@ public:
 			}
 		}
 
-		auto& reactor() {
-			return m_reactor;
-		}
-
-	private:
 		constexpr static int NoneEvent = 0;
 		constexpr static int ReadEvent = EPOLLIN | EPOLLPRI;
 		constexpr static int WriteEvent = EPOLLOUT;
