@@ -11,14 +11,10 @@ fantasy::Reactor reactor;
 reactor.run();
 
 // It will run on the reactor thread, do not block the current thread
-reactor.callLater([&] {
-    printf("task");
-});
+reactor.callLater([&] { spdlog::info("task"); });
 
 // It will run on the reactor thread, block the current thread
-reactor.callNow([&] {
-    printf("task");
-});
+reactor.callNow([&] { spdlog::info("task"); });
 
 ```
 
@@ -28,24 +24,20 @@ fantasy::Reactor reactor;
 reactor.run();
 
 // It will run in one second
-reactor.callAt(std::chrono::system_clock::now() + std::chrono::seconds(1), [] {
-    printf("callAt");
-});
+reactor.callAt(std::chrono::system_clock::now() + std::chrono::seconds(1), [] { spdlog::info("callAt"); });
 
 // It will run in five second
-reactor.callAfter(std::chrono::seconds(5), [] {
-    printf("callAfter");
-});
+reactor.callAfter(std::chrono::seconds(5), [] { spdlog::info("callAfter"); });
 
 // Run every three seconds
 reactor.callEvery(std::chrono::seconds(3), [] {
-    printf("callEvery");
+    spdlog::info("callEvery");
     return fantasy::Reactor::CallStatus::Ok;
 });
 
 // Run every day 05:30:00
 auto id = reactor.callEveryDay(fantasy::Time{5, 30, 0, 0}, [] {
-    printf("callEveryDay");
+    spdlog::info("callEveryDay");
     return fantasy::Reactor::CallStatus::Ok;
 });
 
@@ -57,7 +49,23 @@ reactor.cancel(id);
 ```c++
 fantasy::Reactor reactor;
 reactor.run();
-...
+std::string recv_buffer;
+int servfd;
+struct sockaddr_in servaddr, cliaddr;
+if ((servfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    spdlog::info("create socket error!");
+    exit(1);
+}
+bzero(&servaddr, sizeof(servaddr));
+servaddr.sin_family = AF_INET;
+servaddr.sin_port = htons(SERVER_PORT);
+servaddr.sin_addr.s_addr = htons(INADDR_ANY);
+int opt = 1;
+setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, (const void*)&opt, sizeof(opt));
+if (bind(servfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
+    spdlog::info("bind to port {} failure!", SERVER_PORT);
+    exit(1);
+}
 if (listen(servfd, LENGTH_OF_LISTEN_QUEUE) < 0) {
     spdlog::info("call listen failure!");
     exit(1);
@@ -88,9 +96,12 @@ reactor.callOnRead(servfd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Cha
         return fantasy::Reactor::CallStatus::Ok;
     });
     reactor.callOnWrite(clifd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>& channel_ptr) {
+        if (recv_buffer.empty())
+            return fantasy::Reactor::CallStatus::Ok;
         spdlog::info("callOnWrite");
         char buffer[BUFFER_SIZE] = {};
         memcpy(buffer, recv_buffer.c_str(), recv_buffer.size());
+        recv_buffer.clear();
         spdlog::info("buffer: {}", buffer);
         auto n = write(fd, buffer, strlen(buffer));
         if (n < 0) {

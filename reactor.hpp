@@ -551,7 +551,7 @@ public:
 		}
 
 		void cancel(const TimerId& timer_id) {
-			m_reactor.callNow([=] {
+			m_reactor.callNow([&] {
 				auto i = std::find_if(m_timed_callbacks.begin(), m_timed_callbacks.end(), [&](auto& callback) {
 					return callback.second->id() == timer_id;
 				});
@@ -584,7 +584,6 @@ public:
 		});
 		if (m_thread.joinable())
 			m_thread.join();
-		m_wakeup_channel_ptr->disableAll();
 	}
 
 	auto size() const {
@@ -662,19 +661,19 @@ private:
 			return p.second->fd() == fd;
 		});
 		if (it != m_work_channels.end())
-			return std::pair(it->first, it->second);
+			return it;
 		auto channel_ptr = std::make_shared<Channel>(*this, fd);
 		CallId call_id;
-		m_work_channels.emplace(call_id, channel_ptr);
-		return std::pair(std::move(call_id), std::move(channel_ptr));
+		auto ret = m_work_channels.emplace(std::move(call_id), std::move(channel_ptr));
+		return ret.first;
 	}
 
 public:
 	CallId callOnRead(int fd, IoCall&& io_call, bool is_enable_reading = true) {
 		return callNow([&] {
-			auto [call_id, channel_ptr] = get(fd);
+			auto& [call_id, channel_ptr] = *get(fd);
 			std::weak_ptr<Channel> weak_channel_ptr = channel_ptr;
-			channel_ptr->setReadCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
+			channel_ptr->setReadCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), call_id, fd, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
 				if (call_status == fantasy::Reactor::CallStatus::Remove)
 					cancel(call_id);
@@ -689,27 +688,9 @@ public:
 		return callOnRead(fd, IoCall(call));
 	}
 
-	void callOnEnableReading(const CallId& call_id) {
-		callNow([&] {
-			auto it = m_work_channels.find(call_id);
-			if (it == m_work_channels.end())
-				return;
-			it->second->enableReading();
-		});
-	}
-
-	void callOnEnableWriting(const CallId& call_id) {
-		callNow([&] {
-			auto it = m_work_channels.find(call_id);
-			if (it == m_work_channels.end())
-				return;
-			it->second->enableWriting();
-		});
-	}
-
 	CallId callOnWrite(int fd, IoCall&& io_call, bool is_enable_writing = false) {
 		return callNow([&] {
-			auto [call_id, channel_ptr] = get(fd);
+			auto& [call_id, channel_ptr] = *get(fd);
 			std::weak_ptr<Channel> weak_channel_ptr = channel_ptr;
 			channel_ptr->setWriteCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
@@ -728,7 +709,7 @@ public:
 
 	CallId callOnClose(int fd, IoCall&& io_call) {
 		return callNow([&] {
-			auto [call_id, channel_ptr] = get(fd);
+			auto& [call_id, channel_ptr] = *get(fd);
 			std::weak_ptr<Channel> weak_channel_ptr = channel_ptr;
 			channel_ptr->setCloseCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
@@ -745,7 +726,7 @@ public:
 
 	CallId callOnError(int fd, IoCall&& io_call) {
 		return callNow([&] {
-			auto [call_id, channel_ptr] = get(fd);
+			auto& [call_id, channel_ptr] = *get(fd);
 			std::weak_ptr<Channel> weak_channel_ptr = channel_ptr;
 			channel_ptr->setErrorCallback([this, weak_channel_ptr = std::move(weak_channel_ptr), fd, call_id, io_call = std::move(io_call)] {
 				auto call_status = io_call(fd, weak_channel_ptr);
@@ -763,7 +744,7 @@ public:
 	template <typename T>
 	void cancel(const T& id) {
 		if constexpr (std::is_same_v<T, CallId>) {
-			callNow([this, id] {
+			callNow([&] {
 				if (auto it = m_work_channels.find(id); it != m_work_channels.end()) {
 					it->second->disableAll();
 					m_release_channel.emplace_back(std::move(it->second));
@@ -776,12 +757,10 @@ public:
 	}
 
 	void run() {
-		m_timer_queue_ptr = std::make_unique<TimerManager>(*this);
-		m_wakeup_channel_ptr = std::make_unique<Channel>(*this, m_wakeup_fd_ptr[0]);
-		m_wakeup_channel_ptr->setReadCallback(std::bind(&Reactor::wakeupRead, this));
-		m_wakeup_channel_ptr->enableReading();
 		m_thread = std::thread([&] {
 			m_thread_id = std::this_thread::get_id();
+			m_timer_queue_ptr = std::make_unique<TimerManager>(*this);
+			auto call_id = callOnRead(m_wakeup_fd_ptr[0], [&](int fd, const std::weak_ptr<Channel>&) { wakeupRead(fd); return CallStatus::Ok; });
 			try {
 				for (;;) {
 					auto active_channels = m_epoller_ptr->poll(-1);
@@ -793,6 +772,7 @@ public:
 				}
 			} catch (const Shutdown&) {
 				std::lock_guard<std::mutex> lk(m_mtx);
+				cancel(call_id);
 				for (auto& func : m_pending_functors)
 					func();
 			}
@@ -815,9 +795,9 @@ private:
 		m_epoller_ptr->updateChannel(channel);
 	}
 
-	void wakeupRead() {
+	void wakeupRead(const int& fd) {
 		char c;
-		if (read(m_wakeup_fd_ptr[0], &c, sizeof(c)) == -1 && m_error_callback)
+		if (read(fd, &c, sizeof(c)) == -1 && m_error_callback)
 			m_error_callback(__FILE__, __LINE__, errno);
 		std::unique_lock<std::mutex> lk(m_mtx);
 		auto pending_functors = std::move(m_pending_functors);
@@ -828,7 +808,6 @@ private:
 
 	std::unique_ptr<Epoll> m_epoller_ptr;
 	std::unique_ptr<int[], std::function<void(int*)>> m_wakeup_fd_ptr;
-	std::unique_ptr<Channel> m_wakeup_channel_ptr;
 	std::thread::id m_thread_id;
 	std::thread m_thread;
 	std::vector<Functor> m_pending_functors;

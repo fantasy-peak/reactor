@@ -47,7 +47,8 @@ int main() {
 		std::this_thread::sleep_for(std::chrono::seconds(3));
 	});
 	spdlog::info("end callNow");
-	while (true)
-		std::this_thread::sleep_for(std::chrono::seconds(1));
+	while (true) {
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+	}
 	return 0;
 }

@@ -61,9 +61,12 @@ int main() {
 			return fantasy::Reactor::CallStatus::Ok;
 		});
 		reactor.callOnWrite(clifd, [&](int fd, const std::weak_ptr<fantasy::Reactor::Channel>& channel_ptr) {
+			if (recv_buffer.empty())
+				return fantasy::Reactor::CallStatus::Ok;
 			spdlog::info("callOnWrite");
 			char buffer[BUFFER_SIZE] = {};
 			memcpy(buffer, recv_buffer.c_str(), recv_buffer.size());
+			recv_buffer.clear();
 			spdlog::info("buffer: {}", buffer);
 			auto n = write(fd, buffer, strlen(buffer));
 			if (n < 0) {
