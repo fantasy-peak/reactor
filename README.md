@@ -1,4 +1,5 @@
 # reactor
+[![Build Status](https://travis-ci.com/fantasy-peak/reactor.svg?branch=main)](https://travis-ci.com/fantasy-peak/reactor)
 
 A C++17 single-file header-only, based on reactor mode, It can add tasks and timers and file descriptor to reactor(one loop one thread)
 

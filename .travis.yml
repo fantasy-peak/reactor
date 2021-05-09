@@ -1,0 +1,25 @@
+
+language: cpp
+
+os:
+  - linux
+
+dist: bionic
+
+compiler:
+  - gcc
+
+script:
+  - which cmake
+  - wget https://github.com/Kitware/CMake/releases/download/v3.20.2/cmake-3.20.2-linux-x86_64.tar.gz
+  - tar xfz cmake-3.20.2-linux-x86_64.tar.gz
+  - pwd
+  - mkdir build && cd build
+  - ../cmake-3.20.2-linux-x86_64/bin/cmake ..
+  - make
+
+branches:
+  only:
+    - main
+    - dev
+
