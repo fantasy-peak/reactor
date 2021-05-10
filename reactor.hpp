@@ -483,95 +483,11 @@ public:
 		std::optional<Time> m_time_opt;
 	};
 
-	class TimerManager {
-	public:
-		TimerManager(Reactor& reactor)
-			: m_reactor(reactor)
-			, m_timerfd_ptr(std::make_unique<TimerFd>()) {
-			m_timerfd_channel_ptr = std::make_unique<Channel>(reactor, m_timerfd_ptr->fd());
-			m_timerfd_channel_ptr->setReadCallback(std::bind(&TimerManager::handleRead, this));
-			m_timerfd_channel_ptr->enableReading();
-		}
-
-		~TimerManager() {
-			m_timerfd_channel_ptr->disableAll();
-		}
-
-		TimerId addTimer(RepeatCall&& timer_callback,
-			const std::chrono::system_clock::time_point& time_point,
-			const std::chrono::microseconds& interval) {
-			auto timer_ptr = std::make_shared<Timer>(std::move(timer_callback), time_point, interval);
-			auto timer_id = timer_ptr->id();
-			m_reactor.callNow([&] {
-				auto it = m_timed_callbacks.emplace(time_point, std::move(timer_ptr));
-				if (it == m_timed_callbacks.begin())
-					m_timerfd_ptr->resetTimerfd(time_point);
-			});
-			return timer_id;
-		}
-
-		TimerId addTimer(const RepeatCall& timer_callback,
-			const std::chrono::system_clock::time_point& time_point,
-			const std::chrono::microseconds& interval) {
-			return addTimer(RepeatCall{timer_callback}, time_point, interval);
-		}
-
-		TimerId addTimer(RepeatCall&& timer_callback, Time&& time) {
-			auto timer_ptr = std::make_shared<Timer>(std::move(timer_callback), std::move(time));
-			auto timer_id = timer_ptr->id();
-			m_reactor.callNow([&] {
-				auto time_point = timer_ptr->timePoint();
-				auto it = m_timed_callbacks.emplace(time_point, std::move(timer_ptr));
-				if (it == m_timed_callbacks.begin())
-					m_timerfd_ptr->resetTimerfd(time_point);
-			});
-			return timer_id;
-		}
-
-		TimerId addTimer(const RepeatCall& timer_callback, const Time& time) {
-			return addTimer(RepeatCall{timer_callback}, Time{time});
-		}
-
-		void handleRead() {
-			m_timerfd_ptr->read();
-			std::vector<std::shared_ptr<Timer>> repeat_call;
-			auto now = std::chrono::system_clock::now();
-			while (!m_timed_callbacks.empty() && m_timed_callbacks.begin()->first <= now) {
-				auto callback = std::move(m_timed_callbacks.begin()->second);
-				m_timed_callbacks.erase(m_timed_callbacks.begin());
-				if (callback->run() == CallStatus::Ok)
-					repeat_call.emplace_back(std::move(callback));
-			}
-			for (auto& call_ptr : repeat_call) {
-				call_ptr->reset();
-				m_timed_callbacks.emplace(call_ptr->timePoint(), std::move(call_ptr));
-			}
-			if (!m_timed_callbacks.empty())
-				m_timerfd_ptr->resetTimerfd(m_timed_callbacks.begin()->first);
-		}
-
-		void cancel(const TimerId& timer_id) {
-			m_reactor.callNow([&] {
-				auto i = std::find_if(m_timed_callbacks.begin(), m_timed_callbacks.end(), [&](auto& callback) {
-					return callback.second->id() == timer_id;
-				});
-				if (i == m_timed_callbacks.end())
-					return;
-				m_timed_callbacks.erase(i);
-			});
-		}
-
-	private:
-		Reactor& m_reactor;
-		std::unique_ptr<TimerFd> m_timerfd_ptr;
-		std::shared_ptr<Channel> m_timerfd_channel_ptr;
-		std::multimap<std::chrono::system_clock::time_point, std::shared_ptr<Timer>> m_timed_callbacks;
-	};
-
 	Reactor(const std::function<void(const char*, int, int)>& error_callback = nullptr)
 		: m_epoller_ptr(std::make_unique<Epoll>(error_callback))
-		, m_wakeup_fd_ptr(new int[2](), [](int* wakeup_fd_ptr) {close(wakeup_fd_ptr[0]); close(wakeup_fd_ptr[1]); delete[] wakeup_fd_ptr; })
-		, m_error_callback(error_callback) {
+		, m_wakeup_fd_ptr(new int[2](), [](int* wakeup_fd_ptr) { close(wakeup_fd_ptr[0]); close(wakeup_fd_ptr[1]); delete[] wakeup_fd_ptr; })
+		, m_error_callback(error_callback)
+		, m_timerfd_ptr(std::make_unique<TimerFd>()) {
 		if (::pipe(m_wakeup_fd_ptr.get()) == -1)
 			throw std::system_error(errno, std::system_category(), "pipe error, can't constructor reactor");
 		::fcntl(m_wakeup_fd_ptr[0], F_SETFL, O_NONBLOCK | O_CLOEXEC);
@@ -601,14 +517,13 @@ public:
 
 	template <typename Callable>
 	auto callNow(Callable&& call) -> decltype(call()) {
-		if (m_thread_id == std::this_thread::get_id())
-			return call();
-		else {
+		auto task_call = [&] {
 			std::packaged_task<decltype(call())()> task(std::forward<Callable>(call));
 			auto future = task.get_future();
 			addCallback([&] { task(); });
 			return future.get();
-		}
+		};
+		return (m_thread_id == std::this_thread::get_id()) ? call() : task_call();
 	}
 
 	TimerId callAt(std::chrono::system_clock::time_point expiry, SingleCall&& single_call) {
@@ -616,15 +531,14 @@ public:
 			single_call();
 			return CallStatus::Remove;
 		};
-		return m_timer_queue_ptr->addTimer(std::move(repeat_call), expiry, std::chrono::microseconds{0});
+		auto timer_ptr = std::make_shared<Timer>(std::move(repeat_call), expiry, std::chrono::microseconds{0});
+		auto timer_id = timer_ptr->id();
+		callNow([&] { addTimedCallback(std::move(timer_ptr)); });
+		return timer_id;
 	}
 
 	TimerId callAt(std::chrono::system_clock::time_point expiry, const SingleCall& single_call) {
-		auto repeat_call = [=] {
-			single_call();
-			return CallStatus::Remove;
-		};
-		return m_timer_queue_ptr->addTimer(std::move(repeat_call), expiry, std::chrono::microseconds{0});
+		return callAt(expiry, SingleCall(single_call));
 	}
 
 	TimerId callAfter(std::chrono::system_clock::duration timeout, SingleCall&& single_call) {
@@ -639,20 +553,25 @@ public:
 
 	TimerId callEvery(std::chrono::system_clock::duration timeout, RepeatCall&& repeat_call) {
 		auto expiry = std::chrono::system_clock::now() + timeout;
-		return m_timer_queue_ptr->addTimer(std::move(repeat_call), expiry, std::chrono::duration_cast<std::chrono::microseconds>(timeout));
+		auto timer_ptr = std::make_shared<Timer>(std::move(repeat_call), expiry, std::chrono::duration_cast<std::chrono::microseconds>(timeout));
+		auto timer_id = timer_ptr->id();
+		callNow([&] { addTimedCallback(std::move(timer_ptr)); });
+		return timer_id;
 	}
 
 	TimerId callEvery(std::chrono::system_clock::duration timeout, const RepeatCall& repeat_call) {
-		auto expiry = std::chrono::system_clock::now() + timeout;
-		return m_timer_queue_ptr->addTimer(repeat_call, expiry, std::chrono::duration_cast<std::chrono::microseconds>(timeout));
+		return callEvery(timeout, RepeatCall(repeat_call));
 	}
 
 	TimerId callEveryDay(Time&& time, RepeatCall&& repeat_call) {
-		return m_timer_queue_ptr->addTimer(std::move(repeat_call), std::move(time));
+		auto timer_ptr = std::make_shared<Timer>(std::move(repeat_call), std::move(time));
+		auto timer_id = timer_ptr->id();
+		callNow([&] { addTimedCallback(std::move(timer_ptr)); });
+		return timer_id;
 	}
 
 	TimerId callEveryDay(const Time& time, const RepeatCall& repeat_call) {
-		return m_timer_queue_ptr->addTimer(repeat_call, time);
+		return callEveryDay(Time{time}, RepeatCall(repeat_call));
 	}
 
 private:
@@ -752,14 +671,22 @@ public:
 				}
 			});
 		}
-		else
-			m_timer_queue_ptr->cancel(id);
+		else {
+			callNow([&] {
+				auto it = std::find_if(m_timed_callbacks.begin(), m_timed_callbacks.end(), [&](auto& callback) {
+					return callback.second->id() == id;
+				});
+				if (it == m_timed_callbacks.end())
+					return;
+				m_timed_callbacks.erase(it);
+			});
+		}
 	}
 
 	void run() {
 		m_thread = std::thread([&] {
 			m_thread_id = std::this_thread::get_id();
-			m_timer_queue_ptr = std::make_unique<TimerManager>(*this);
+			auto timer_call_id = callOnRead(m_timerfd_ptr->fd(), [&](int fd, const std::weak_ptr<Channel>&) { handleRead(fd); return CallStatus::Ok; });
 			auto call_id = callOnRead(m_wakeup_fd_ptr[0], [&](int fd, const std::weak_ptr<Channel>&) { wakeupRead(fd); return CallStatus::Ok; });
 			try {
 				for (;;) {
@@ -773,6 +700,7 @@ public:
 			} catch (const Shutdown&) {
 				std::lock_guard<std::mutex> lk(m_mtx);
 				cancel(call_id);
+				cancel(timer_call_id);
 				for (auto& func : m_pending_functors)
 					func();
 			}
@@ -791,6 +719,13 @@ private:
 		m_pending_functors.emplace_back(std::forward<E>(callback));
 	}
 
+	void addTimedCallback(std::shared_ptr<Timer>&& timer_ptr) {
+		auto time_point = timer_ptr->timePoint();
+		auto it = m_timed_callbacks.emplace(time_point, std::move(timer_ptr));
+		if (it == m_timed_callbacks.begin())
+			m_timerfd_ptr->resetTimerfd(time_point);
+	}
+
 	void updateChannel(Channel* channel) {
 		m_epoller_ptr->updateChannel(channel);
 	}
@@ -806,13 +741,30 @@ private:
 			func();
 	}
 
+	void handleRead(int) {
+		m_timerfd_ptr->read();
+		std::vector<std::shared_ptr<Timer>> repeat_call;
+		auto now = std::chrono::system_clock::now();
+		while (!m_timed_callbacks.empty() && m_timed_callbacks.begin()->first <= now) {
+			auto callback = std::move(m_timed_callbacks.begin()->second);
+			m_timed_callbacks.erase(m_timed_callbacks.begin());
+			if (callback->run() == CallStatus::Ok)
+				repeat_call.emplace_back(std::move(callback));
+		}
+		for (auto& call_ptr : repeat_call) {
+			call_ptr->reset();
+			m_timed_callbacks.emplace(call_ptr->timePoint(), std::move(call_ptr));
+		}
+		if (!m_timed_callbacks.empty())
+			m_timerfd_ptr->resetTimerfd(m_timed_callbacks.begin()->first);
+	}
+
 	std::unique_ptr<Epoll> m_epoller_ptr;
 	std::unique_ptr<int[], std::function<void(int*)>> m_wakeup_fd_ptr;
 	std::thread::id m_thread_id;
 	std::thread m_thread;
 	std::vector<Functor> m_pending_functors;
 	mutable std::mutex m_mtx;
-	std::unique_ptr<TimerManager> m_timer_queue_ptr;
 	struct KeyHash {
 		std::size_t operator()(const CallId& call_id) const {
 			return std::hash<uint64_t>()(call_id.id());
@@ -821,6 +773,8 @@ private:
 	std::unordered_map<CallId, std::shared_ptr<Channel>, KeyHash> m_work_channels;
 	std::vector<std::shared_ptr<Channel>> m_release_channel;
 	std::function<void(const char*, int, int)> m_error_callback;
+	std::unique_ptr<TimerFd> m_timerfd_ptr;
+	std::multimap<std::chrono::system_clock::time_point, std::shared_ptr<Timer>> m_timed_callbacks;
 };
 
 } // namespace fantasy
