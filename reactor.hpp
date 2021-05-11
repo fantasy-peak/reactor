@@ -342,55 +342,27 @@ public:
 		std::unique_ptr<int, std::function<void(int*)>> m_timerfd_ptr;
 	};
 
-	class IdGenerator : public NonCopyable {
-	public:
-		static IdGenerator& getInstance() {
-			static IdGenerator instance;
-			return instance;
-		}
-
-		uint64_t operator()() {
-			return m_value++;
-		}
-
-	private:
-		std::atomic<uint64_t> m_value{0};
-	};
-
-	class TimerId {
-	public:
-		TimerId()
-			: m_sequence(IdGenerator::getInstance()()) {
-		}
-
-		bool operator==(TimerId rhs) const {
-			return m_sequence == rhs.m_sequence;
-		}
-
-		auto& id() {
-			return m_sequence;
-		}
-
-	private:
-		uint64_t m_sequence;
+	enum class CallType {
+		IoCall,
+		TimedCall,
 	};
 
 	class CallId {
 	public:
-		CallId()
-			: m_sequence(IdGenerator::getInstance()()) {
+		CallId(CallType type = CallType::TimedCall)
+			: m_id(m_sequence++)
+			, m_call_type(type) {
 		}
 
-		bool operator==(CallId rhs) const {
-			return m_sequence == rhs.m_sequence;
-		}
+		bool operator==(CallId rhs) const { return m_id == rhs.m_id; }
 
-		const auto& id() const {
-			return m_sequence;
-		}
+		const auto& id() const { return m_id; }
+		const auto& type() const { return m_call_type; }
 
 	private:
-		uint64_t m_sequence;
+		uint64_t m_id;
+		CallType m_call_type;
+		inline static std::atomic<uint64_t> m_sequence{0};
 	};
 
 	class Timer : public NonCopyable {
@@ -467,8 +439,8 @@ public:
 				m_time_point = now + m_interval;
 		}
 
-		TimerId& id() {
-			return m_timer_id;
+		auto& id() {
+			return m_call_id;
 		}
 
 		auto& timePoint() {
@@ -479,7 +451,7 @@ public:
 		RepeatCall m_timer_callback;
 		std::chrono::system_clock::time_point m_time_point;
 		std::chrono::microseconds m_interval;
-		TimerId m_timer_id;
+		CallId m_call_id;
 		std::optional<Time> m_time_opt;
 	};
 
@@ -526,51 +498,51 @@ public:
 		return (m_thread_id == std::this_thread::get_id()) ? call() : task_call();
 	}
 
-	TimerId callAt(std::chrono::system_clock::time_point expiry, SingleCall&& single_call) {
+	CallId callAt(std::chrono::system_clock::time_point expiry, SingleCall&& single_call) {
 		auto repeat_call = [single_call = std::move(single_call)] {
 			single_call();
 			return CallStatus::Remove;
 		};
 		auto timer_ptr = std::make_shared<Timer>(std::move(repeat_call), expiry, std::chrono::microseconds{0});
-		auto timer_id = timer_ptr->id();
+		auto call_id = timer_ptr->id();
 		callNow([&] { addTimedCallback(std::move(timer_ptr)); });
-		return timer_id;
+		return call_id;
 	}
 
-	TimerId callAt(std::chrono::system_clock::time_point expiry, const SingleCall& single_call) {
+	CallId callAt(std::chrono::system_clock::time_point expiry, const SingleCall& single_call) {
 		return callAt(expiry, SingleCall(single_call));
 	}
 
-	TimerId callAfter(std::chrono::system_clock::duration timeout, SingleCall&& single_call) {
+	CallId callAfter(std::chrono::system_clock::duration timeout, SingleCall&& single_call) {
 		auto expiry = std::chrono::system_clock::now() + timeout;
 		return callAt(expiry, std::move(single_call));
 	}
 
-	TimerId callAfter(std::chrono::system_clock::duration timeout, const SingleCall& single_call) {
+	CallId callAfter(std::chrono::system_clock::duration timeout, const SingleCall& single_call) {
 		auto expiry = std::chrono::system_clock::now() + timeout;
 		return callAt(expiry, single_call);
 	}
 
-	TimerId callEvery(std::chrono::system_clock::duration timeout, RepeatCall&& repeat_call) {
+	CallId callEvery(std::chrono::system_clock::duration timeout, RepeatCall&& repeat_call) {
 		auto expiry = std::chrono::system_clock::now() + timeout;
 		auto timer_ptr = std::make_shared<Timer>(std::move(repeat_call), expiry, std::chrono::duration_cast<std::chrono::microseconds>(timeout));
-		auto timer_id = timer_ptr->id();
+		auto call_id = timer_ptr->id();
 		callNow([&] { addTimedCallback(std::move(timer_ptr)); });
-		return timer_id;
+		return call_id;
 	}
 
-	TimerId callEvery(std::chrono::system_clock::duration timeout, const RepeatCall& repeat_call) {
+	CallId callEvery(std::chrono::system_clock::duration timeout, const RepeatCall& repeat_call) {
 		return callEvery(timeout, RepeatCall(repeat_call));
 	}
 
-	TimerId callEveryDay(Time&& time, RepeatCall&& repeat_call) {
+	CallId callEveryDay(Time&& time, RepeatCall&& repeat_call) {
 		auto timer_ptr = std::make_shared<Timer>(std::move(repeat_call), std::move(time));
-		auto timer_id = timer_ptr->id();
+		auto call_id = timer_ptr->id();
 		callNow([&] { addTimedCallback(std::move(timer_ptr)); });
-		return timer_id;
+		return call_id;
 	}
 
-	TimerId callEveryDay(const Time& time, const RepeatCall& repeat_call) {
+	CallId callEveryDay(const Time& time, const RepeatCall& repeat_call) {
 		return callEveryDay(Time{time}, RepeatCall(repeat_call));
 	}
 
@@ -582,7 +554,7 @@ private:
 		if (it != m_work_channels.end())
 			return it;
 		auto channel_ptr = std::make_shared<Channel>(*this, fd);
-		CallId call_id;
+		CallId call_id{CallType::IoCall};
 		auto ret = m_work_channels.emplace(std::move(call_id), std::move(channel_ptr));
 		return ret.first;
 	}
@@ -660,9 +632,9 @@ public:
 		return callOnError(fd, IoCall(call));
 	}
 
-	template <typename T>
-	void cancel(const T& id) {
-		if constexpr (std::is_same_v<T, CallId>) {
+	void cancel(const CallId& id) {
+		switch (id.type()) {
+		case CallType::IoCall: {
 			callNow([&] {
 				if (auto it = m_work_channels.find(id); it != m_work_channels.end()) {
 					it->second->disableAll();
@@ -670,8 +642,9 @@ public:
 					m_work_channels.erase(id);
 				}
 			});
+			break;
 		}
-		else {
+		case CallType::TimedCall: {
 			callNow([&] {
 				auto it = std::find_if(m_timed_callbacks.begin(), m_timed_callbacks.end(), [&](auto& callback) {
 					return callback.second->id() == id;
@@ -680,6 +653,10 @@ public:
 					return;
 				m_timed_callbacks.erase(it);
 			});
+			break;
+		}
+		default:
+			break;
 		}
 	}
 
