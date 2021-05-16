@@ -2,15 +2,11 @@
 #define _REACTOR_HPP_INCLUDED_
 
 #include <fcntl.h>
-#include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
-#include <chrono>
-#include <ctime>
-#include <iomanip>
 
 #include <chrono>
 #include <functional>
@@ -19,7 +15,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <ostream>
 #include <system_error>
 #include <thread>
 
@@ -62,16 +57,21 @@ public:
 		Remove = 1,
 	};
 
-	using EventCallback = std::function<void()>;
-	using SingleCall = std::function<void()>;
-	using Functor = std::function<void()>;
-	using RepeatCall = std::function<CallStatus()>;
-
 	enum class FdStatus : int8_t {
 		New = -1,
 		Added = 1,
 		Deleted = 2,
 	};
+
+	enum class CallType : int8_t {
+		IoCall = 0,
+		TimedCall = 1,
+	};
+
+	using EventCallback = std::function<void()>;
+	using SingleCall = std::function<void()>;
+	using Functor = std::function<void()>;
+	using RepeatCall = std::function<CallStatus()>;
 
 	class Channel : public NonCopyable {
 	public:
@@ -293,8 +293,13 @@ public:
 
 	class TimerFd : public NonCopyable {
 	public:
-		TimerFd() {
-			createTimerfd();
+		TimerFd()
+			: m_timerfd_ptr(new int(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)), [](int* timerfd_ptr) {
+				close(*timerfd_ptr);
+				delete timerfd_ptr;
+			}) {
+			if (*m_timerfd_ptr == -1)
+				throw std::system_error(errno, std::generic_category(), "can not create timerfd");
 		}
 
 		void resetTimerfd(const std::chrono::system_clock::time_point& expire_time_point) {
@@ -314,18 +319,6 @@ public:
 				throw std::system_error(errno, std::generic_category(), "can not set TimerFd");
 		}
 
-		int& createTimerfd() {
-			m_timerfd_ptr = nullptr;
-			std::unique_ptr<int, std::function<void(int*)>> timerfd_ptr(new int(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)), [](int* timerfd_ptr) {
-				close(*timerfd_ptr);
-				delete timerfd_ptr;
-			});
-			m_timerfd_ptr = std::move(timerfd_ptr);
-			if (*m_timerfd_ptr == -1)
-				throw std::system_error(errno, std::generic_category(), "can not create timerfd");
-			return *m_timerfd_ptr;
-		}
-
 		std::optional<uint64_t> read() {
 			uint64_t expired;
 			auto res = ::read(*m_timerfd_ptr, &expired, sizeof(expired));
@@ -342,11 +335,6 @@ public:
 		std::unique_ptr<int, std::function<void(int*)>> m_timerfd_ptr;
 	};
 
-	enum class CallType {
-		IoCall,
-		TimedCall,
-	};
-
 	class CallId {
 	public:
 		CallId(CallType type = CallType::TimedCall)
@@ -356,8 +344,13 @@ public:
 
 		bool operator==(CallId rhs) const { return m_id == rhs.m_id; }
 
-		const auto& id() const { return m_id; }
-		const auto& type() const { return m_call_type; }
+		const auto& id() const {
+			return m_id;
+		}
+
+		const auto& type() const {
+			return m_call_type;
+		}
 
 	private:
 		uint64_t m_id;
@@ -467,9 +460,7 @@ public:
 	}
 
 	~Reactor() {
-		callLater([=] {
-			throw Shutdown();
-		});
+		callLater([] { throw Shutdown(); });
 		if (m_thread.joinable())
 			m_thread.join();
 	}
@@ -690,7 +681,7 @@ private:
 		std::lock_guard<std::mutex> lock(m_mtx);
 		if (m_pending_functors.empty()) {
 			const char c = '\0';
-			if (write(m_wakeup_fd_ptr[1], &c, sizeof(c)) == -1 && m_error_callback)
+			if (::write(m_wakeup_fd_ptr[1], &c, sizeof(c)) == -1 && m_error_callback)
 				m_error_callback(__FILE__, __LINE__, errno);
 		}
 		m_pending_functors.emplace_back(std::forward<E>(callback));
@@ -709,7 +700,7 @@ private:
 
 	void wakeupRead(const int& fd) {
 		char c;
-		if (read(fd, &c, sizeof(c)) == -1 && m_error_callback)
+		if (::read(fd, &c, sizeof(c)) == -1 && m_error_callback)
 			m_error_callback(__FILE__, __LINE__, errno);
 		std::unique_lock<std::mutex> lk(m_mtx);
 		auto pending_functors = std::move(m_pending_functors);
