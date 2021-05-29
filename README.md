@@ -5,6 +5,34 @@ A C++17 single-file header-only, based on reactor mode, It can add tasks and tim
 
 Simple examples
 ---------------
+#### create thread pool
+
+```c++
+auto thread_pool = std::make_unique<fantasy::ThreadPool>(2);
+auto get_thread_id = [] {
+    std::stringstream ss;
+    ss << std::this_thread::get_id();
+    return ss.str();
+};
+std::future<std::string> ret_1 = thread_pool->enqueue([&] {
+    spdlog::info("1 thread_id: {}", get_thread_id());
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    return std::string{"hello"};
+});
+std::future<int32_t> ret_2 = thread_pool->enqueue([&] {
+    spdlog::info("2 thread_id: {}", get_thread_id());
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    return 999;
+});
+std::future<double> ret_3 = thread_pool->enqueue([&] {
+    spdlog::info("3 thread_id: {}", get_thread_id());
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    return 999.1;
+});
+spdlog::info("ret_1: {}", ret_1.get());
+spdlog::info("ret_2: {}", ret_2.get());
+spdlog::info("ret_3: {}", ret_3.get());
+```
 
 #### add a task
 ```c++
@@ -12,10 +40,14 @@ fantasy::Reactor reactor;
 reactor.run();
 
 // It will run on the reactor thread, do not block the current thread
-reactor.callLater([&] { spdlog::info("task"); });
+reactor.callLater([&] {
+    spdlog::info("task");
+});
 
 // It will run on the reactor thread, block the current thread
-reactor.callNow([&] { spdlog::info("task"); });
+reactor.callNow([&] {
+    spdlog::info("task");
+});
 
 ```
 
@@ -25,10 +57,14 @@ fantasy::Reactor reactor;
 reactor.run();
 
 // It will run in one second
-reactor.callAt(std::chrono::system_clock::now() + std::chrono::seconds(1), [] { spdlog::info("callAt"); });
+reactor.callAt(std::chrono::system_clock::now() + std::chrono::seconds(1),[] {
+    spdlog::info("callAt");
+});
 
 // It will run in five second
-reactor.callAfter(std::chrono::seconds(5), [] { spdlog::info("callAfter"); });
+reactor.callAfter(std::chrono::seconds(5), [] {
+    spdlog::info("callAfter");
+});
 
 // Run every three seconds
 reactor.callEvery(std::chrono::seconds(3), [] {

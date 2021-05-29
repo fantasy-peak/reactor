@@ -741,8 +741,42 @@ private:
 	std::unordered_map<CallId, std::shared_ptr<Channel>, KeyHash> m_work_channels;
 	std::vector<std::shared_ptr<Channel>> m_release_channel;
 	std::function<void(const char*, int, int)> m_error_callback;
-	std::unique_ptr<TimerFd> m_timerfd_ptr;
+	std::unique_ptr<TimerFd> m_timerfd_ptr{nullptr};
 	std::multimap<std::chrono::system_clock::time_point, std::shared_ptr<Timer>> m_timed_callbacks;
+};
+
+class ThreadPool {
+public:
+	ThreadPool(uint32_t thread_num = 0)
+		: m_worker_thread_num(thread_num == 0 ? std::thread::hardware_concurrency() : thread_num) {
+		for (uint32_t i = 0; i < m_worker_thread_num; i++) {
+			auto reactor_ptr = std::make_unique<Reactor>();
+			reactor_ptr->run();
+			m_reactors.emplace_back(std::move(reactor_ptr));
+		}
+	}
+
+	template <typename F, typename... Args>
+	auto enqueue(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>> {
+		using return_type = std::invoke_result_t<F, Args...>;
+		auto task = std::make_shared<std::packaged_task<return_type()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+		std::future<return_type> res = task->get_future();
+		uint32_t current_worker_position;
+		{
+			std::unique_lock<std::mutex> lock(m_mtx);
+			if (m_worker_thread_num == m_current_worker_position)
+				m_current_worker_position = 0;
+			current_worker_position = m_current_worker_position++;
+		}
+		m_reactors[current_worker_position]->callLater([task = std::move(task)]() { (*task)(); });
+		return res;
+	}
+
+private:
+	uint32_t m_worker_thread_num;
+	std::mutex m_mtx;
+	std::vector<std::unique_ptr<Reactor>> m_reactors;
+	uint32_t m_current_worker_position{0};
 };
 
 } // namespace fantasy
